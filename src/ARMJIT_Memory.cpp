@@ -953,16 +953,16 @@ ARMJIT_Memory::ARMJIT_Memory(melonDS::NDS& nds) : NDS(nds)
             u32 sectionOffset = offset;
             // determine whether this page range contains JIT code (protected)
             bool hasCode = false;
-            if (CodeMemRegions[region])
+            if (NDS.JIT.CodeMemRegions[region])
             {
-                AddressRange* range = CodeMemRegions[region] + (mirrorStart + offset) / 512;
+                AddressRange* range = NDS.JIT.CodeMemRegions[region] + (mirrorStart + offset) / 512;
                 hasCode = PageContainsCode(range, PageSize);
             }
 
             while (offset < mapSize)
             {
                 AddressRange* range = nullptr;
-                if (CodeMemRegions[region]) range = CodeMemRegions[region] + (mirrorStart + offset) / 512;
+                if (NDS.JIT.CodeMemRegions[region]) range = NDS.JIT.CodeMemRegions[region] + (mirrorStart + offset) / 512;
                 bool thisHasCode = range ? PageContainsCode(range, PageSize) : false;
                 if (thisHasCode != hasCode) break;
                 states[(mirrorStart + offset) >> PageShift] = hasCode ? memstate_MappedProtected : memstate_MappedRW;
