@@ -346,7 +346,12 @@ void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
     }
 
     // color special effects
-    // can likely be optimized
+    if ((GPU2D.BlendCnt & 0x3F) == 0)
+    {
+        for (int i = 0; i < 256; i++)
+            dst[i] = BGOBJLine[i];
+        return;
+    }
 
     for (int i = 0; i < 256; i++)
     {

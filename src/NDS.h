@@ -508,6 +508,10 @@ public: // TODO: Encapsulate the rest of these members
 protected:
     void InitTimings();
     u32 SchedListMask;
+    std::array<u8, Event_MAX> ActiveEventList{};
+    u8 ActiveEventCount = 0;
+    void AddActiveEvent(u32 id);
+    void RemoveActiveEvent(u32 id);
     u64 SysTimestamp;
     u8 WRAMCnt;
     u8 PostFlag9;

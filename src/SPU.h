@@ -291,6 +291,8 @@ private:
 
     std::array<SPUChannel, 16> Channels;
     std::array<SPUCaptureUnit, 2> Capture;
+    std::array<u8, 16> ActiveChannelIds{};
+    u8 ActiveChannelCount = 0;
 };
 
 }

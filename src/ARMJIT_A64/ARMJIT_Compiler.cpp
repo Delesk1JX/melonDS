@@ -677,13 +677,13 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
 {
     if (JitMemMainSize - GetCodeOffset() < 1024 * 16)
     {
-        Log(LogLevel::Debug, "JIT near memory full, resetting...\n");
-        NDS.JIT.ResetBlockCache();
+        Log(LogLevel::Debug, "JIT near memory full, evicting blocks...\n");
+        NDS.JIT.EvictLeastRecentlyUsedBlocks(64);
     }
     if ((JitMemMainSize +  JitMemSecondarySize) - OtherCodeRegion < 1024 * 8)
     {
-        Log(LogLevel::Debug, "JIT far memory full, resetting...\n");
-        NDS.JIT.ResetBlockCache();
+        Log(LogLevel::Debug, "JIT far memory full, evicting blocks...\n");
+        NDS.JIT.EvictLeastRecentlyUsedBlocks(64);
     }
 
     JitBlockEntry res = (JitBlockEntry)GetRXPtr();

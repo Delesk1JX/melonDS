@@ -40,6 +40,7 @@ public:
     u32 StartAddr;
     u32 StartAddrLocal;
     u32 InstrHash, LiteralHash;
+    u64 LastUsedTick = 0;
     u8 Num;
     u16 NumAddresses;
     u16 NumLiterals;

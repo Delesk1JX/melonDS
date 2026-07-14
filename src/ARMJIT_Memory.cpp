@@ -41,6 +41,8 @@
 #include "ARMJIT_Compiler.h"
 #include "ARMJIT_Global.h"
 
+#include <algorithm>
+
 #include "DSi.h"
 #include "GPU.h"
 #include "GPU3D.h"
@@ -925,6 +927,77 @@ ARMJIT_Memory::ARMJIT_Memory(melonDS::NDS& nds) : NDS(nds)
 #endif
     FastMem9Start = MemoryBase+MemoryTotalSize;
     FastMem7Start = static_cast<u8*>(FastMem9Start)+AddrSpaceSize;
+
+    // Preload a few commonly accessed regions into fastmem to reduce SIGSEGV/SEGV faults
+    // during early runtime. We limit the preload size to avoid mapping massive areas.
+    const u32 preloadLimit = 4 * 1024 * 1024; // 4 MiB per region
+
+    auto tryPreload = [&](int num, int region, u32 sampleAddr, u32 limit)
+    {
+        if (!IsFastmemCompatible(region)) return;
+
+        u32 memoryOffset = 0, mirrorStart = 0, mirrorSize = 0;
+        if (!GetMirrorLocation(region, num, sampleAddr, memoryOffset, mirrorStart, mirrorSize))
+            return;
+
+        u32 mapSize = mirrorSize;
+        if (mapSize > limit) mapSize = limit;
+        mapSize &= ~(PageSize - 1);
+        if (!mapSize) return;
+
+        u8* states = num == 0 ? MappingStatus9 : MappingStatus7;
+
+        u32 offset = 0;
+        while (offset < mapSize)
+        {
+            u32 sectionOffset = offset;
+            // determine whether this page range contains JIT code (protected)
+            bool hasCode = false;
+            if (CodeMemRegions[region])
+            {
+                AddressRange* range = CodeMemRegions[region] + (mirrorStart + offset) / 512;
+                hasCode = PageContainsCode(range, PageSize);
+            }
+
+            while (offset < mapSize)
+            {
+                AddressRange* range = nullptr;
+                if (CodeMemRegions[region]) range = CodeMemRegions[region] + (mirrorStart + offset) / 512;
+                bool thisHasCode = range ? PageContainsCode(range, PageSize) : false;
+                if (thisHasCode != hasCode) break;
+                states[(mirrorStart + offset) >> PageShift] = hasCode ? memstate_MappedProtected : memstate_MappedRW;
+                offset += PageSize;
+            }
+
+            u32 sectionSize = offset - sectionOffset;
+            if (sectionSize == 0) break;
+
+#if !defined(__SWITCH__)
+            if (hasCode)
+            {
+                // protect code pages
+                SetCodeProtectionRange(mirrorStart + sectionOffset, sectionSize, num, 1);
+            }
+            else
+#endif
+            {
+                // map non-code pages into fastmem
+                MapIntoRange(mirrorStart + sectionOffset, num, OffsetsPerRegion[region] + memoryOffset + sectionOffset, sectionSize);
+            }
+        }
+
+        // record a partial mapping so later unmap logic is consistent
+        Mapping mapping{mirrorStart, mapSize, memoryOffset, static_cast<u32>(num)};
+        Mappings[region].Add(mapping);
+    };
+
+    // preload for both CPUs where applicable
+    tryPreload(0, memregion_MainRAM, 0x02000000, preloadLimit);
+    tryPreload(1, memregion_MainRAM, 0x02000000, preloadLimit);
+    tryPreload(0, memregion_SharedWRAM, 0x03000000, preloadLimit);
+    tryPreload(1, memregion_SharedWRAM, 0x03000000, preloadLimit);
+    tryPreload(0, memregion_VRAM, 0x06000000, preloadLimit);
+    tryPreload(1, memregion_VWRAM, 0x06800000, preloadLimit);
 }
 
 ARMJIT_Memory::~ARMJIT_Memory() noexcept

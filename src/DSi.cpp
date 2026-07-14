@@ -2672,13 +2672,10 @@ void DSi::ARM9IOWrite8(u32 addr, u8 val)
     switch (addr)
     {
     case 0x04000301:
-        // TODO: OPTIONAL PERFORMANCE HACK
-        // the DSi ARM9 BIOS has a bug where the IRQ wait function attempts to use (ARM7-only) HALTCNT
-        // effectively causing it to wait in a busy loop.
-        // for better DSi performance, we can implement an actual IRQ wait here.
-        // in practice this would only matter when running DS software in DSi mode (ie already a hack).
-        // DSi software does not use the BIOS IRQ wait function.
-        //if (val == 0x80 && NDS::ARM9->R[15] == 0xFFFF0268) NDS::ARM9->Halt(1);
+        // The DSi ARM9 BIOS IRQ wait path uses the ARM7-only HALTCNT register and can busy-wait.
+        // Implementing a real halt here avoids spinning in this path while keeping DS-mode behaviour intact.
+        if (val == 0x80 && ARM9.R[15] == 0xFFFF0268)
+            ARM9.Halt(1);
         return;
 
     case 0x04004006:

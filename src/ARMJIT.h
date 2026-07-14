@@ -54,6 +54,7 @@ public:
     void JitEnableExecute() noexcept;
     void CompileBlock(ARM* cpu) noexcept;
     void ResetBlockCache() noexcept;
+    void EvictLeastRecentlyUsedBlocks(size_t count) noexcept;
 
     template <u32 num, int region>
     void CheckAndInvalidate(u32 addr) noexcept
@@ -94,6 +95,7 @@ public:
     Compiler JITCompiler;
     std::unordered_map<u32, JitBlock*> JitBlocks9 {};
     std::unordered_map<u32, JitBlock*> JitBlocks7 {};
+    u64 CacheAccessTick = 0;
 
     std::unordered_map<u32, JitBlock*> RestoreCandidates {};
 

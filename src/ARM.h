@@ -164,6 +164,9 @@ public:
         };
         u32 StopExecution;
     };
+    bool ShouldCheckStopState = true;
+    u8 LastHaltedState = 0;
+    u8 LastIRQState = 0;
 
     u32 CodeRegion;
     s32 CodeCycles;

@@ -614,6 +614,7 @@ void ARMv5::Execute()
         }
     }
 
+    ShouldCheckStopState = true;
     while (NDS.ARM9Timestamp < NDS.ARM9Target)
     {
 #ifdef JIT_ENABLED
@@ -698,22 +699,35 @@ void ARMv5::Execute()
                     AddCycles_C();
             }
 
-            // TODO optimize this shit!!!
-            if (Halted)
+            if (ShouldCheckStopState)
             {
-                if (Halted == 1 && NDS.ARM9Timestamp < NDS.ARM9Target)
+                if (Halted)
                 {
-                    NDS.ARM9Timestamp = NDS.ARM9Target;
+                    if (Halted == 1 && NDS.ARM9Timestamp < NDS.ARM9Target)
+                    {
+                        NDS.ARM9Timestamp = NDS.ARM9Target;
+                    }
+                    break;
                 }
-                break;
+                /*if (NDS::IF[0] & NDS::IE[0])
+                {
+                    if (NDS::IME[0] & 0x1)
+                        TriggerIRQ();
+                }*/
+                if (IRQ) TriggerIRQ();
             }
-            /*if (NDS::IF[0] & NDS::IE[0])
-            {
-                if (NDS::IME[0] & 0x1)
-                    TriggerIRQ();
-            }*/
-            if (IRQ) TriggerIRQ();
 
+        }
+
+        if (Halted != LastHaltedState || IRQ != LastIRQState)
+        {
+            LastHaltedState = Halted;
+            LastIRQState = IRQ;
+            ShouldCheckStopState = true;
+        }
+        else
+        {
+            ShouldCheckStopState = false;
         }
 
         NDS.ARM9Timestamp += Cycles;
@@ -754,6 +768,7 @@ void ARMv4::Execute()
         }
     }
 
+    ShouldCheckStopState = true;
     while (NDS.ARM7Timestamp < NDS.ARM7Target)
     {
 #ifdef JIT_ENABLED
@@ -832,21 +847,34 @@ void ARMv4::Execute()
                     AddCycles_C();
             }
 
-            // TODO optimize this shit!!!
-            if (Halted)
+            if (ShouldCheckStopState)
             {
-                if (Halted == 1 && NDS.ARM7Timestamp < NDS.ARM7Target)
+                if (Halted)
                 {
-                    NDS.ARM7Timestamp = NDS.ARM7Target;
+                    if (Halted == 1 && NDS.ARM7Timestamp < NDS.ARM7Target)
+                    {
+                        NDS.ARM7Timestamp = NDS.ARM7Target;
+                    }
+                    break;
                 }
-                break;
+                /*if (NDS::IF[1] & NDS::IE[1])
+                {
+                    if (NDS::IME[1] & 0x1)
+                        TriggerIRQ();
+                }*/
+                if (IRQ) TriggerIRQ();
             }
-            /*if (NDS::IF[1] & NDS::IE[1])
-            {
-                if (NDS::IME[1] & 0x1)
-                    TriggerIRQ();
-            }*/
-            if (IRQ) TriggerIRQ();
+        }
+
+        if (Halted != LastHaltedState || IRQ != LastIRQState)
+        {
+            LastHaltedState = Halted;
+            LastIRQState = IRQ;
+            ShouldCheckStopState = true;
+        }
+        else
+        {
+            ShouldCheckStopState = false;
         }
 
         NDS.ARM7Timestamp += Cycles;

@@ -286,11 +286,15 @@ void ARMv5::UpdatePURegions(bool update_all)
     for (int n = 0; n < 8; n++)
     {
         UpdatePURegion(n);
+        UpdateRegionTimings(n * 0x20000, (n + 1) * 0x20000);
     }
 
-    // TODO: this is way unoptimized
-    // should be okay unless the game keeps changing shit, tho
-    if (update_all) UpdateRegionTimings(0x00000, 0x100000);
+    if (update_all)
+    {
+        // keep the full-range timing refresh for the disabled/initial state path,
+        // but avoid it on the common per-region updates above.
+        UpdateRegionTimings(0x00000, 0x100000);
+    }
 
     // TODO: throw exception if the region we're running in has become non-executable, I guess
 }

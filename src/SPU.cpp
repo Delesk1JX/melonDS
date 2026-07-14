@@ -252,6 +252,9 @@ void SPU::Reset()
     for (int i = 0; i < 16; i++)
         Channels[i].Reset();
 
+    ActiveChannelCount = 0;
+    ActiveChannelIds.fill(0);
+
     Capture[0].Reset();
     Capture[1].Reset();
 
@@ -863,10 +866,17 @@ void SPU::Mix(u32 spucycles)
 
     if (Cnt & (1<<15))
     {
-        s32 ch0 = Channels[0].DoRun(spucycles);
-        s32 ch1 = Channels[1].DoRun(spucycles);
-        s32 ch2 = Channels[2].DoRun(spucycles);
-        s32 ch3 = Channels[3].DoRun(spucycles);
+        ActiveChannelCount = 0;
+        for (int ch = 0; ch < 16; ch++)
+        {
+            if (Channels[ch].Cnt & 0x8000)
+                ActiveChannelIds[ActiveChannelCount++] = static_cast<u8>(ch);
+        }
+
+        s32 ch0 = (Channels[0].Cnt & 0x8000) ? Channels[0].DoRun(spucycles) : 0;
+        s32 ch1 = (Channels[1].Cnt & 0x8000) ? Channels[1].DoRun(spucycles) : 0;
+        s32 ch2 = (Channels[2].Cnt & 0x8000) ? Channels[2].DoRun(spucycles) : 0;
+        s32 ch3 = (Channels[3].Cnt & 0x8000) ? Channels[3].DoRun(spucycles) : 0;
 
         // TODO: addition from capture registers
         Channels[0].PanOutput(ch0, left, right);
@@ -875,10 +885,13 @@ void SPU::Mix(u32 spucycles)
         if (!(Cnt & (1<<12))) Channels[1].PanOutput(ch1, left, right);
         if (!(Cnt & (1<<13))) Channels[3].PanOutput(ch3, left, right);
 
-        for (int i = 4; i < 16; i++)
+        for (u8 index = 0; index < ActiveChannelCount; index++)
         {
-            SPUChannel* chan = &Channels[i];
+            const u8 ch = ActiveChannelIds[index];
+            if (ch < 4)
+                continue;
 
+            SPUChannel* chan = &Channels[ch];
             s32 channel = chan->DoRun(spucycles);
             chan->PanOutput(channel, left, right);
         }

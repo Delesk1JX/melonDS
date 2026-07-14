@@ -82,6 +82,7 @@ void DMA::Reset()
     InProgress = false;
     MRAMBurstCount = 0;
     MRAMBurstTable = DMATiming::MRAMDummy;
+    CachedTimingValid = false;
 }
 
 void DMA::DoSavestate(Savestate* file)
@@ -198,19 +199,81 @@ void DMA::Start()
     NDS.StopCPU(CPU, 1<<Num);
 }
 
-u32 DMA::UnitTimings9_16(bool burststart)
+void DMA::RefreshTimingCache9(bool use32)
 {
     u32 src_id = CurSrcAddr >> 14;
     u32 dst_id = CurDstAddr >> 14;
 
-    u32 src_rgn = NDS.ARM9Regions[src_id];
-    u32 dst_rgn = NDS.ARM9Regions[dst_id];
+    if (CachedTimingValid && CachedTimingWidth32 == use32 && CachedTimingSrcId == src_id && CachedTimingDstId == dst_id)
+        return;
 
-    u32 src_n, src_s, dst_n, dst_s;
-    src_n = NDS.ARM9MemTimings[src_id][4];
-    src_s = NDS.ARM9MemTimings[src_id][5];
-    dst_n = NDS.ARM9MemTimings[dst_id][4];
-    dst_s = NDS.ARM9MemTimings[dst_id][5];
+    CachedTimingSrcId = src_id;
+    CachedTimingDstId = dst_id;
+    CachedTimingWidth32 = use32;
+    CachedTimingValid = true;
+
+    CachedTimingSrcRgn = NDS.ARM9Regions[src_id];
+    CachedTimingDstRgn = NDS.ARM9Regions[dst_id];
+
+    if (use32)
+    {
+        CachedTimingSrcN = NDS.ARM9MemTimings[src_id][6];
+        CachedTimingSrcS = NDS.ARM9MemTimings[src_id][7];
+        CachedTimingDstN = NDS.ARM9MemTimings[dst_id][6];
+        CachedTimingDstS = NDS.ARM9MemTimings[dst_id][7];
+    }
+    else
+    {
+        CachedTimingSrcN = NDS.ARM9MemTimings[src_id][4];
+        CachedTimingSrcS = NDS.ARM9MemTimings[src_id][5];
+        CachedTimingDstN = NDS.ARM9MemTimings[dst_id][4];
+        CachedTimingDstS = NDS.ARM9MemTimings[dst_id][5];
+    }
+}
+
+void DMA::RefreshTimingCache7(bool use32)
+{
+    u32 src_id = CurSrcAddr >> 15;
+    u32 dst_id = CurDstAddr >> 15;
+
+    if (CachedTimingValid && CachedTimingWidth32 == use32 && CachedTimingSrcId == src_id && CachedTimingDstId == dst_id)
+        return;
+
+    CachedTimingSrcId = src_id;
+    CachedTimingDstId = dst_id;
+    CachedTimingWidth32 = use32;
+    CachedTimingValid = true;
+
+    CachedTimingSrcRgn = NDS.ARM7Regions[src_id];
+    CachedTimingDstRgn = NDS.ARM7Regions[dst_id];
+
+    if (use32)
+    {
+        CachedTimingSrcN = NDS.ARM7MemTimings[src_id][2];
+        CachedTimingSrcS = NDS.ARM7MemTimings[src_id][3];
+        CachedTimingDstN = NDS.ARM7MemTimings[dst_id][2];
+        CachedTimingDstS = NDS.ARM7MemTimings[dst_id][3];
+    }
+    else
+    {
+        CachedTimingSrcN = NDS.ARM7MemTimings[src_id][0];
+        CachedTimingSrcS = NDS.ARM7MemTimings[src_id][1];
+        CachedTimingDstN = NDS.ARM7MemTimings[dst_id][0];
+        CachedTimingDstS = NDS.ARM7MemTimings[dst_id][1];
+    }
+}
+
+u32 DMA::UnitTimings9_16(bool burststart)
+{
+    RefreshTimingCache9(false);
+
+    u32 src_rgn = CachedTimingSrcRgn;
+    u32 dst_rgn = CachedTimingDstRgn;
+
+    u32 src_n = CachedTimingSrcN;
+    u32 src_s = CachedTimingSrcS;
+    u32 dst_n = CachedTimingDstN;
+    u32 dst_s = CachedTimingDstS;
 
     if (src_rgn == Mem9_MainRAM)
     {
@@ -286,17 +349,15 @@ u32 DMA::UnitTimings9_16(bool burststart)
 
 u32 DMA::UnitTimings9_32(bool burststart)
 {
-    u32 src_id = CurSrcAddr >> 14;
-    u32 dst_id = CurDstAddr >> 14;
+    RefreshTimingCache9(true);
 
-    u32 src_rgn = NDS.ARM9Regions[src_id];
-    u32 dst_rgn = NDS.ARM9Regions[dst_id];
+    u32 src_rgn = CachedTimingSrcRgn;
+    u32 dst_rgn = CachedTimingDstRgn;
 
-    u32 src_n, src_s, dst_n, dst_s;
-    src_n = NDS.ARM9MemTimings[src_id][6];
-    src_s = NDS.ARM9MemTimings[src_id][7];
-    dst_n = NDS.ARM9MemTimings[dst_id][6];
-    dst_s = NDS.ARM9MemTimings[dst_id][7];
+    u32 src_n = CachedTimingSrcN;
+    u32 src_s = CachedTimingSrcS;
+    u32 dst_n = CachedTimingDstN;
+    u32 dst_s = CachedTimingDstS;
 
     if (src_rgn == Mem9_MainRAM)
     {
@@ -378,17 +439,15 @@ u32 DMA::UnitTimings9_32(bool burststart)
 
 u32 DMA::UnitTimings7_16(bool burststart)
 {
-    u32 src_id = CurSrcAddr >> 15;
-    u32 dst_id = CurDstAddr >> 15;
+    RefreshTimingCache7(false);
 
-    u32 src_rgn = NDS.ARM7Regions[src_id];
-    u32 dst_rgn = NDS.ARM7Regions[dst_id];
+    u32 src_rgn = CachedTimingSrcRgn;
+    u32 dst_rgn = CachedTimingDstRgn;
 
-    u32 src_n, src_s, dst_n, dst_s;
-    src_n = NDS.ARM7MemTimings[src_id][0];
-    src_s = NDS.ARM7MemTimings[src_id][1];
-    dst_n = NDS.ARM7MemTimings[dst_id][0];
-    dst_s = NDS.ARM7MemTimings[dst_id][1];
+    u32 src_n = CachedTimingSrcN;
+    u32 src_s = CachedTimingSrcS;
+    u32 dst_n = CachedTimingDstN;
+    u32 dst_s = CachedTimingDstS;
 
     if (src_rgn == Mem7_MainRAM)
     {
@@ -464,17 +523,15 @@ u32 DMA::UnitTimings7_16(bool burststart)
 
 u32 DMA::UnitTimings7_32(bool burststart)
 {
-    u32 src_id = CurSrcAddr >> 15;
-    u32 dst_id = CurDstAddr >> 15;
+    RefreshTimingCache7(true);
 
-    u32 src_rgn = NDS.ARM7Regions[src_id];
-    u32 dst_rgn = NDS.ARM7Regions[dst_id];
+    u32 src_rgn = CachedTimingSrcRgn;
+    u32 dst_rgn = CachedTimingDstRgn;
 
-    u32 src_n, src_s, dst_n, dst_s;
-    src_n = NDS.ARM7MemTimings[src_id][2];
-    src_s = NDS.ARM7MemTimings[src_id][3];
-    dst_n = NDS.ARM7MemTimings[dst_id][2];
-    dst_s = NDS.ARM7MemTimings[dst_id][3];
+    u32 src_n = CachedTimingSrcN;
+    u32 src_s = CachedTimingSrcS;
+    u32 dst_n = CachedTimingDstN;
+    u32 dst_s = CachedTimingDstS;
 
     if (src_rgn == Mem7_MainRAM)
     {

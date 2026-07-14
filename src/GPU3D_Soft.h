@@ -448,6 +448,11 @@ private:
     void TextureLookup(u32 texparam, u32 texpal, s16 s, s16 t, u16* color, u8* alpha) const;
     u32 RenderPixel(const Polygon* polygon, u8 vr, u8 vg, u8 vb, s16 s, s16 t) const;
     void PlotTranslucentPixel(u32 pixeladdr, u32 color, u32 z, u32 polyattr, u32 shadow);
+    void PushPixelToLowerLayer(u32 pixeladdr) noexcept;
+    void StoreOpaquePixel(u32 pixeladdr, s32 z, u32 color, u32 attr, bool preserveLowerLayer) noexcept;
+    using DepthTestFn = bool (*)(s32 dstz, s32 z, u32 dstattr);
+    bool ResolvePixelForRaster(u32& pixeladdr, s32 z, u32& dstattr, Pixel& pixel, DepthTestFn depthTest) noexcept;
+    void MarkShadowStencil(u32 pixeladdr, int x, int y, s32 z, DepthTestFn depthTest) noexcept;
     void SetupPolygonLeftEdge(RendererPolygon* rp, s32 y) const;
     void SetupPolygonRightEdge(RendererPolygon* rp, s32 y) const;
     void SetupPolygon(RendererPolygon* rp, Polygon* polygon) const;
@@ -472,9 +477,25 @@ private:
     static constexpr int BufferSize = ScanlineWidth * NumScanlines;
     static constexpr int FirstPixelOffset = ScanlineWidth + 1;
 
-    u32 ColorBuffer[BufferSize * 2];
-    u32 DepthBuffer[BufferSize * 2];
-    u32 AttrBuffer[BufferSize * 2];
+    struct Pixel
+    {
+        u32 Color;
+        u32 Depth;
+        u32 Attr;
+    };
+
+    // Unified storage for the soft renderer's per-pixel state.
+    Pixel Pixels[BufferSize * 2];
+
+    inline Pixel LoadPixel(int pixeladdr) const noexcept
+    {
+        return Pixels[pixeladdr];
+    }
+
+    inline void StorePixel(int pixeladdr, const Pixel& p) noexcept
+    {
+        Pixels[pixeladdr] = p;
+    }
 
     // attribute buffer:
     // bit0-3: edge flags (left/right/top/bottom)

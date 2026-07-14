@@ -118,9 +118,7 @@ SoftRenderer3D::~SoftRenderer3D()
 
 void SoftRenderer3D::Reset()
 {
-    memset(ColorBuffer, 0, BufferSize * 2 * 4);
-    memset(DepthBuffer, 0, BufferSize * 2 * 4);
-    memset(AttrBuffer, 0, BufferSize * 2 * 4);
+    memset(Pixels, 0, sizeof(Pixels));
 
     PrevIsShadowMask = false;
 
@@ -564,7 +562,8 @@ u32 SoftRenderer3D::RenderPixel(const Polygon* polygon, u8 vr, u8 vg, u8 vb, s16
 
 void SoftRenderer3D::PlotTranslucentPixel(u32 pixeladdr, u32 color, u32 z, u32 polyattr, u32 shadow)
 {
-    u32 dstattr = AttrBuffer[pixeladdr];
+    Pixel p = LoadPixel(pixeladdr);
+    u32 dstattr = p.Attr;
     u32 attr = (polyattr & 0xE0F0) | ((polyattr >> 8) & 0xFF0000) | (1<<22) | (dstattr & 0xFF001F0F);
 
     if (shadow)
@@ -592,13 +591,68 @@ void SoftRenderer3D::PlotTranslucentPixel(u32 pixeladdr, u32 color, u32 z, u32 p
     if (!(dstattr & (1<<15)))
         attr &= ~(1<<15);
 
-    color = AlphaBlend(color, ColorBuffer[pixeladdr], color>>24);
+    p.Color = AlphaBlend(color, p.Color, color>>24);
 
     if (z != -1)
-        DepthBuffer[pixeladdr] = z;
+        p.Depth = z;
 
-    ColorBuffer[pixeladdr] = color;
-    AttrBuffer[pixeladdr] = attr;
+    p.Attr = attr;
+
+    StorePixel(pixeladdr, p);
+}
+
+void SoftRenderer3D::PushPixelToLowerLayer(u32 pixeladdr) noexcept
+{
+    if (pixeladdr < BufferSize)
+    {
+        Pixel top = LoadPixel(pixeladdr);
+        StorePixel(pixeladdr + BufferSize, top);
+    }
+}
+
+void SoftRenderer3D::StoreOpaquePixel(u32 pixeladdr, s32 z, u32 color, u32 attr, bool preserveLowerLayer) noexcept
+{
+    if (preserveLowerLayer)
+        PushPixelToLowerLayer(pixeladdr);
+
+    Pixel p = LoadPixel(pixeladdr);
+    p.Depth = z;
+    p.Color = color;
+    p.Attr = attr;
+    StorePixel(pixeladdr, p);
+}
+
+bool SoftRenderer3D::ResolvePixelForRaster(u32& pixeladdr, s32 z, u32& dstattr, Pixel& pixel, DepthTestFn depthTest) noexcept
+{
+    pixel = LoadPixel(pixeladdr);
+    dstattr = pixel.Attr;
+
+    if (depthTest(pixel.Depth, z, dstattr))
+        return true;
+
+    if (!(dstattr & 0xF) || pixeladdr >= BufferSize)
+        return false;
+
+    pixeladdr += BufferSize;
+    pixel = LoadPixel(pixeladdr);
+    dstattr = pixel.Attr;
+    return depthTest(pixel.Depth, z, dstattr);
+}
+
+void SoftRenderer3D::MarkShadowStencil(u32 pixeladdr, int x, int y, s32 z, DepthTestFn depthTest) noexcept
+{
+    Pixel pixel = LoadPixel(pixeladdr);
+    const u32 dstattr = pixel.Attr;
+
+    if (!depthTest(pixel.Depth, z, dstattr))
+        StencilBuffer[256*(y&0x1) + x] = 1;
+
+    if (dstattr & 0xF)
+    {
+        Pixel lower = LoadPixel(pixeladdr + BufferSize);
+        if (!depthTest(lower.Depth, z, lower.Attr))
+            StencilBuffer[256*(y&0x1) + x] |= 0x2;
+    }
 }
 
 void SoftRenderer3D::SetupPolygonLeftEdge(SoftRenderer3D::RendererPolygon* rp, s32 y) const
@@ -867,17 +921,7 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
         interpX.SetX(x);
 
         s32 z = interpX.InterpolateZ(zl, zr);
-        u32 dstattr = AttrBuffer[pixeladdr];
-
-        if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-            StencilBuffer[256*(y&0x1) + x] = 1;
-
-        if (dstattr & 0xF)
-        {
-            pixeladdr += BufferSize;
-            if (!fnDepthTest(DepthBuffer[pixeladdr], z, AttrBuffer[pixeladdr]))
-                StencilBuffer[256*(y&0x1) + x] |= 0x2;
-        }
+        MarkShadowStencil(pixeladdr, x, y, z, fnDepthTest);
     }
 
     // part 2: polygon inside
@@ -893,17 +937,7 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
         interpX.SetX(x);
 
         s32 z = interpX.InterpolateZ(zl, zr);
-        u32 dstattr = AttrBuffer[pixeladdr];
-
-        if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-            StencilBuffer[256*(y&0x1) + x] = 1;
-
-        if (dstattr & 0xF)
-        {
-            pixeladdr += BufferSize;
-            if (!fnDepthTest(DepthBuffer[pixeladdr], z, AttrBuffer[pixeladdr]))
-                StencilBuffer[256*(y&0x1) + x] |= 0x2;
-        }
+        MarkShadowStencil(pixeladdr, x, y, z, fnDepthTest);
     }
 
     // part 3: right edge
@@ -919,17 +953,7 @@ void SoftRenderer3D::RenderShadowMaskScanline(RendererPolygon* rp, s32 y)
         interpX.SetX(x);
 
         s32 z = interpX.InterpolateZ(zl, zr);
-        u32 dstattr = AttrBuffer[pixeladdr];
-
-        if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-            StencilBuffer[256*(y&0x1) + x] = 1;
-
-        if (dstattr & 0xF)
-        {
-            pixeladdr += BufferSize;
-            if (!fnDepthTest(DepthBuffer[pixeladdr], z, AttrBuffer[pixeladdr]))
-                StencilBuffer[256*(y&0x1) + x] |= 0x2;
-        }
+        MarkShadowStencil(pixeladdr, x, y, z, fnDepthTest);
     }
 
     rp->XL = rp->SlopeL.Step();
@@ -1117,7 +1141,8 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
     for (; x < xlimit; x++)
     {
         u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
-        u32 dstattr = AttrBuffer[pixeladdr];
+        Pixel p;
+        u32 dstattr = 0;
 
         // check stencil buffer for shadows
         if (polygon->IsShadow)
@@ -1137,15 +1162,8 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
         // if depth test against the topmost pixel fails, test
         // against the pixel underneath
-        if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-        {
-            if (!(dstattr & 0xF) || pixeladdr >= BufferSize) continue;
-
-            pixeladdr += BufferSize;
-            dstattr = AttrBuffer[pixeladdr];
-            if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-                continue;
-        }
+        if (!ResolvePixelForRaster(pixeladdr, z, dstattr, p, fnDepthTest))
+            continue;
 
         u32 vr = interpX.Interpolate(rl, rr);
         u32 vg = interpX.Interpolate(gl, gr);
@@ -1177,19 +1195,9 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
                     xcov += (l_edgecov & 0x3FF);
                 }
                 attr |= (cov << 8);
-
-                // push old pixel down if needed
-                if (pixeladdr < BufferSize)
-                {
-                    ColorBuffer[pixeladdr+BufferSize] = ColorBuffer[pixeladdr];
-                    DepthBuffer[pixeladdr+BufferSize] = DepthBuffer[pixeladdr];
-                    AttrBuffer[pixeladdr+BufferSize] = AttrBuffer[pixeladdr];
-                }
             }
 
-            DepthBuffer[pixeladdr] = z;
-            ColorBuffer[pixeladdr] = color;
-            AttrBuffer[pixeladdr] = attr;
+            StoreOpaquePixel(pixeladdr, z, color, attr, (GPU3D.RenderDispCnt & (1<<4)) != 0);
         }
         else
         {
@@ -1213,7 +1221,8 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
     for (; x < xlimit; x++)
     {
         u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
-        u32 dstattr = AttrBuffer[pixeladdr];
+        Pixel p;
+        u32 dstattr = 0;
 
         // check stencil buffer for shadows
         if (polygon->IsShadow)
@@ -1233,15 +1242,8 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
         // if depth test against the topmost pixel fails, test
         // against the pixel underneath
-        if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-        {
-            if (!(dstattr & 0xF) || pixeladdr >= BufferSize) continue;
-
-            pixeladdr += BufferSize;
-            dstattr = AttrBuffer[pixeladdr];
-            if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-                continue;
-        }
+        if (!ResolvePixelForRaster(pixeladdr, z, dstattr, p, fnDepthTest))
+            continue;
 
         u32 vr = interpX.Interpolate(rl, rr);
         u32 vg = interpX.Interpolate(gl, gr);
@@ -1266,19 +1268,9 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
                 // set coverage to avoid black lines from anti-aliasing
                 attr |= (0x1F << 8);
-
-                // push old pixel down if needed
-                if (pixeladdr < BufferSize)
-                {
-                    ColorBuffer[pixeladdr+BufferSize] = ColorBuffer[pixeladdr];
-                    DepthBuffer[pixeladdr+BufferSize] = DepthBuffer[pixeladdr];
-                    AttrBuffer[pixeladdr+BufferSize] = AttrBuffer[pixeladdr];
-                }
             }
 
-            DepthBuffer[pixeladdr] = z;
-            ColorBuffer[pixeladdr] = color;
-            AttrBuffer[pixeladdr] = attr;
+            StoreOpaquePixel(pixeladdr, z, color, attr, (GPU3D.RenderDispCnt & (1<<4)) != 0 && (attr & 0xF));
         }
         else
         {
@@ -1305,7 +1297,8 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
     for (; x < xlimit; x++)
     {
         u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
-        u32 dstattr = AttrBuffer[pixeladdr];
+        Pixel p;
+        u32 dstattr = 0;
 
         // check stencil buffer for shadows
         if (polygon->IsShadow)
@@ -1325,15 +1318,8 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
 
         // if depth test against the topmost pixel fails, test
         // against the pixel underneath
-        if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-        {
-            if (!(dstattr & 0xF) || pixeladdr >= BufferSize) continue;
-
-            pixeladdr += BufferSize;
-            dstattr = AttrBuffer[pixeladdr];
-            if (!fnDepthTest(DepthBuffer[pixeladdr], z, dstattr))
-                continue;
-        }
+        if (!ResolvePixelForRaster(pixeladdr, z, dstattr, p, fnDepthTest))
+            continue;
 
         u32 vr = interpX.Interpolate(rl, rr);
         u32 vg = interpX.Interpolate(gl, gr);
@@ -1365,19 +1351,9 @@ void SoftRenderer3D::RenderPolygonScanline(RendererPolygon* rp, s32 y)
                     xcov += (r_edgecov & 0x3FF);
                 }
                 attr |= (cov << 8);
-
-                // push old pixel down if needed
-                if (pixeladdr < BufferSize)
-                {
-                    ColorBuffer[pixeladdr+BufferSize] = ColorBuffer[pixeladdr];
-                    DepthBuffer[pixeladdr+BufferSize] = DepthBuffer[pixeladdr];
-                    AttrBuffer[pixeladdr+BufferSize] = AttrBuffer[pixeladdr];
-                }
             }
 
-            DepthBuffer[pixeladdr] = z;
-            ColorBuffer[pixeladdr] = color;
-            AttrBuffer[pixeladdr] = attr;
+            StoreOpaquePixel(pixeladdr, z, color, attr, (GPU3D.RenderDispCnt & (1<<4)) != 0);
         }
         else
         {
@@ -1413,7 +1389,7 @@ void SoftRenderer3D::RenderScanline(s32 y, int npolys)
 
 u32 SoftRenderer3D::CalculateFogDensity(u32 pixeladdr) const
 {
-    u32 z = DepthBuffer[pixeladdr];
+    u32 z = LoadPixel(pixeladdr).Depth;
     u32 densityid, densityfrac;
 
     if (z < GPU3D.RenderFogOffset)
@@ -1452,80 +1428,66 @@ u32 SoftRenderer3D::CalculateFogDensity(u32 pixeladdr) const
 
 void SoftRenderer3D::ScanlineFinalPass(s32 y)
 {
-    // to consider:
-    // clearing all polygon fog flags if the master flag isn't set?
-    // merging all final pass loops into one?
+    const bool edgeMarkingEnabled = GPU3D.RenderDispCnt & (1<<5);
+    const bool fogEnabled = GPU3D.RenderDispCnt & (1<<7);
+    const bool aaEnabled = GPU3D.RenderDispCnt & (1<<4);
 
-    if (GPU3D.RenderDispCnt & (1<<5))
+    if (!edgeMarkingEnabled && !fogEnabled && !aaEnabled)
+        return;
+
+    const bool fogColor = !(GPU3D.RenderDispCnt & (1<<6));
+    const u32 fogR = (GPU3D.RenderFogColor << 1) & 0x3E; 
+    const u32 fogG = (GPU3D.RenderFogColor >> 4) & 0x3E; 
+    const u32 fogB = (GPU3D.RenderFogColor >> 9) & 0x3E; 
+    const u32 fogA = (GPU3D.RenderFogColor >> 16) & 0x1F;
+
+    for (int x = 0; x < 256; x++)
     {
-        // edge marking
-        // only applied to topmost pixels
+        u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
 
-        for (int x = 0; x < 256; x++)
+        if (edgeMarkingEnabled)
         {
-            u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
-
-            u32 attr = AttrBuffer[pixeladdr];
-            if (!(attr & 0xF)) continue;
-
-            u32 polyid = attr >> 24; // opaque polygon IDs are used for edgemarking
-            u32 z = DepthBuffer[pixeladdr];
-
-            if (((polyid != (AttrBuffer[pixeladdr-1] >> 24)) && (z < DepthBuffer[pixeladdr-1])) ||
-                ((polyid != (AttrBuffer[pixeladdr+1] >> 24)) && (z < DepthBuffer[pixeladdr+1])) ||
-                ((polyid != (AttrBuffer[pixeladdr-ScanlineWidth] >> 24)) && (z < DepthBuffer[pixeladdr-ScanlineWidth])) ||
-                ((polyid != (AttrBuffer[pixeladdr+ScanlineWidth] >> 24)) && (z < DepthBuffer[pixeladdr+ScanlineWidth])))
+            Pixel p = LoadPixel(pixeladdr);
+            if (p.Attr & 0xF)
             {
-                u16 edgecolor = GPU3D.RenderEdgeTable[polyid >> 3];
-                u32 edgeR = (edgecolor << 1) & 0x3E; if (edgeR) edgeR++;
-                u32 edgeG = (edgecolor >> 4) & 0x3E; if (edgeG) edgeG++;
-                u32 edgeB = (edgecolor >> 9) & 0x3E; if (edgeB) edgeB++;
+                u32 polyid = p.Attr >> 24;
+                u32 z = p.Depth;
 
-                ColorBuffer[pixeladdr] = edgeR | (edgeG << 8) | (edgeB << 16) | (ColorBuffer[pixeladdr] & 0xFF000000);
+                Pixel pl = LoadPixel(pixeladdr-1);
+                Pixel pr = LoadPixel(pixeladdr+1);
+                Pixel pu = LoadPixel(pixeladdr-ScanlineWidth);
+                Pixel pd = LoadPixel(pixeladdr+ScanlineWidth);
 
-                // break antialiasing coverage (checkme)
-                AttrBuffer[pixeladdr] = (AttrBuffer[pixeladdr] & 0xFFFFE0FF) | 0x00001000;
+                if (((polyid != (pl.Attr >> 24)) && (z < pl.Depth)) ||
+                    ((polyid != (pr.Attr >> 24)) && (z < pr.Depth)) ||
+                    ((polyid != (pu.Attr >> 24)) && (z < pu.Depth)) ||
+                    ((polyid != (pd.Attr >> 24)) && (z < pd.Depth)))
+                {
+                    u16 edgecolor = GPU3D.RenderEdgeTable[polyid >> 3];
+                    u32 edgeR = (edgecolor << 1) & 0x3E; if (edgeR) edgeR++;
+                    u32 edgeG = (edgecolor >> 4) & 0x3E; if (edgeG) edgeG++;
+                    u32 edgeB = (edgecolor >> 9) & 0x3E; if (edgeB) edgeB++;
+
+                    p.Color = edgeR | (edgeG << 8) | (edgeB << 16) | (p.Color & 0xFF000000);
+                    p.Attr = (p.Attr & 0xFFFFE0FF) | 0x00001000;
+                    StorePixel(pixeladdr, p);
+                }
             }
         }
-    }
 
-    if (GPU3D.RenderDispCnt & (1<<7))
-    {
-        // fog
-
-        // hardware testing shows that the fog step is 0x80000>>SHIFT
-        // basically, the depth values used in GBAtek need to be
-        // multiplied by 0x200 to match Z-buffer values
-
-        // fog is applied to the topmost two pixels, which is required for
-        // proper antialiasing
-
-        // TODO: check the 'fog alpha glitch with small Z' GBAtek talks about
-
-        bool fogcolor = !(GPU3D.RenderDispCnt & (1<<6));
-
-        u32 fogR = (GPU3D.RenderFogColor << 1) & 0x3E; if (fogR) fogR++;
-        u32 fogG = (GPU3D.RenderFogColor >> 4) & 0x3E; if (fogG) fogG++;
-        u32 fogB = (GPU3D.RenderFogColor >> 9) & 0x3E; if (fogB) fogB++;
-        u32 fogA = (GPU3D.RenderFogColor >> 16) & 0x1F;
-
-        for (int x = 0; x < 256; x++)
+        if (fogEnabled)
         {
-            u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
-            u32 density, srccolor, srcR, srcG, srcB, srcA;
-
-            u32 attr = AttrBuffer[pixeladdr];
-            if (attr & (1<<15))
+            Pixel p = LoadPixel(pixeladdr);
+            if (p.Attr & (1<<15))
             {
-                density = CalculateFogDensity(pixeladdr);
+                u32 density = CalculateFogDensity(pixeladdr);
+                u32 srccolor = p.Color;
+                u32 srcR = srccolor & 0x3F;
+                u32 srcG = (srccolor >> 8) & 0x3F;
+                u32 srcB = (srccolor >> 16) & 0x3F;
+                u32 srcA = (srccolor >> 24) & 0x1F;
 
-                srccolor = ColorBuffer[pixeladdr];
-                srcR = srccolor & 0x3F;
-                srcG = (srccolor >> 8) & 0x3F;
-                srcB = (srccolor >> 16) & 0x3F;
-                srcA = (srccolor >> 24) & 0x1F;
-
-                if (fogcolor)
+                if (fogColor)
                 {
                     srcR = ((fogR * density) + (srcR * (128-density))) >> 7;
                     srcG = ((fogG * density) + (srcG * (128-density))) >> 7;
@@ -1533,28 +1495,24 @@ void SoftRenderer3D::ScanlineFinalPass(s32 y)
                 }
 
                 srcA = ((fogA * density) + (srcA * (128-density))) >> 7;
-
-                ColorBuffer[pixeladdr] = srcR | (srcG << 8) | (srcB << 16) | (srcA << 24);
+                p.Color = srcR | (srcG << 8) | (srcB << 16) | (srcA << 24);
+                StorePixel(pixeladdr, p);
             }
 
-            // fog for lower pixel
-            // TODO: make this code nicer, but avoid using a loop
+            if (!(p.Attr & 0xF)) continue;
 
-            if (!(attr & 0xF)) continue;
-            pixeladdr += BufferSize;
+            u32 lowerPixelAddr = pixeladdr + BufferSize;
+            Pixel lower = LoadPixel(lowerPixelAddr);
+            if (!(lower.Attr & (1<<15))) continue;
 
-            attr = AttrBuffer[pixeladdr];
-            if (!(attr & (1<<15))) continue;
+            u32 density = CalculateFogDensity(lowerPixelAddr);
+            u32 srccolor = lower.Color;
+            u32 srcR = srccolor & 0x3F;
+            u32 srcG = (srccolor >> 8) & 0x3F;
+            u32 srcB = (srccolor >> 16) & 0x3F;
+            u32 srcA = (srccolor >> 24) & 0x1F;
 
-            density = CalculateFogDensity(pixeladdr);
-
-            srccolor = ColorBuffer[pixeladdr];
-            srcR = srccolor & 0x3F;
-            srcG = (srccolor >> 8) & 0x3F;
-            srcB = (srccolor >> 16) & 0x3F;
-            srcA = (srccolor >> 24) & 0x1F;
-
-            if (fogcolor)
+            if (fogColor)
             {
                 srcR = ((fogR * density) + (srcR * (128-density))) >> 7;
                 srcG = ((fogG * density) + (srcG * (128-density))) >> 7;
@@ -1562,60 +1520,54 @@ void SoftRenderer3D::ScanlineFinalPass(s32 y)
             }
 
             srcA = ((fogA * density) + (srcA * (128-density))) >> 7;
-
-            ColorBuffer[pixeladdr] = srcR | (srcG << 8) | (srcB << 16) | (srcA << 24);
+            lower.Color = srcR | (srcG << 8) | (srcB << 16) | (srcA << 24);
+            StorePixel(lowerPixelAddr, lower);
         }
-    }
 
-    if (GPU3D.RenderDispCnt & (1<<4))
-    {
-        // anti-aliasing
-
-        // edges were flagged and their coverages calculated during rendering
-        // this is where such edge pixels are blended with the pixels underneath
-
-        for (int x = 0; x < 256; x++)
+        if (aaEnabled)
         {
-            u32 pixeladdr = FirstPixelOffset + (y*ScanlineWidth) + x;
-
-            u32 attr = AttrBuffer[pixeladdr];
-            if (!(attr & 0xF)) continue;
-
-            u32 coverage = (attr >> 8) & 0x1F;
-            if (coverage == 0x1F) continue;
-
-            if (coverage == 0)
+            Pixel p = LoadPixel(pixeladdr);
+            if (p.Attr & 0xF)
             {
-                ColorBuffer[pixeladdr] = ColorBuffer[pixeladdr+BufferSize];
-                continue;
+                u32 coverage = (p.Attr >> 8) & 0x1F;
+                if (coverage != 0x1F)
+                {
+                    if (coverage == 0)
+                    {
+                        Pixel lower = LoadPixel(pixeladdr+BufferSize);
+                        p.Color = lower.Color;
+                        StorePixel(pixeladdr, p);
+                    }
+                    else
+                    {
+                        u32 topcolor = p.Color;
+                        u32 topR = topcolor & 0x3F;
+                        u32 topG = (topcolor >> 8) & 0x3F;
+                        u32 topB = (topcolor >> 16) & 0x3F;
+                        u32 topA = (topcolor >> 24) & 0x1F;
+
+                        Pixel lower = LoadPixel(pixeladdr+BufferSize);
+                        u32 botcolor = lower.Color;
+                        u32 botR = botcolor & 0x3F;
+                        u32 botG = (botcolor >> 8) & 0x3F;
+                        u32 botB = (botcolor >> 16) & 0x3F;
+                        u32 botA = (botcolor >> 24) & 0x1F;
+
+                        coverage++;
+
+                        if (botA > 0)
+                        {
+                            topR = ((topR * coverage) + (botR * (32-coverage))) >> 5;
+                            topG = ((topG * coverage) + (botG * (32-coverage))) >> 5;
+                            topB = ((topB * coverage) + (botB * (32-coverage))) >> 5;
+                        }
+
+                        topA = ((topA * coverage) + (botA * (32-coverage))) >> 5;
+                        p.Color = topR | (topG << 8) | (topB << 16) | (topA << 24);
+                        StorePixel(pixeladdr, p);
+                    }
+                }
             }
-
-            u32 topcolor = ColorBuffer[pixeladdr];
-            u32 topR = topcolor & 0x3F;
-            u32 topG = (topcolor >> 8) & 0x3F;
-            u32 topB = (topcolor >> 16) & 0x3F;
-            u32 topA = (topcolor >> 24) & 0x1F;
-
-            u32 botcolor = ColorBuffer[pixeladdr+BufferSize];
-            u32 botR = botcolor & 0x3F;
-            u32 botG = (botcolor >> 8) & 0x3F;
-            u32 botB = (botcolor >> 16) & 0x3F;
-            u32 botA = (botcolor >> 24) & 0x1F;
-
-            coverage++;
-
-            // only blend color if the bottom pixel isn't fully transparent
-            if (botA > 0)
-            {
-                topR = ((topR * coverage) + (botR * (32-coverage))) >> 5;
-                topG = ((topG * coverage) + (botG * (32-coverage))) >> 5;
-                topB = ((topB * coverage) + (botB * (32-coverage))) >> 5;
-            }
-
-            // alpha is always blended
-            topA = ((topA * coverage) + (botA * (32-coverage))) >> 5;
-
-            ColorBuffer[pixeladdr] = topR | (topG << 8) | (topB << 16) | (topA << 24);
         }
     }
 }
@@ -1627,28 +1579,21 @@ void SoftRenderer3D::ClearBuffers()
 
     // fill screen borders for edge marking
 
+    Pixel clearPixel{0, clearz, polyid};
     for (int x = 0; x < ScanlineWidth; x++)
     {
-        ColorBuffer[x] = 0;
-        DepthBuffer[x] = clearz;
-        AttrBuffer[x] = polyid;
+        StorePixel(x, clearPixel);
     }
 
     for (int x = ScanlineWidth; x < ScanlineWidth*193; x+=ScanlineWidth)
     {
-        ColorBuffer[x] = 0;
-        DepthBuffer[x] = clearz;
-        AttrBuffer[x] = polyid;
-        ColorBuffer[x+257] = 0;
-        DepthBuffer[x+257] = clearz;
-        AttrBuffer[x+257] = polyid;
+        StorePixel(x, clearPixel);
+        StorePixel(x+257, clearPixel);
     }
 
     for (int x = ScanlineWidth*193; x < ScanlineWidth*194; x++)
     {
-        ColorBuffer[x] = 0;
-        DepthBuffer[x] = clearz;
-        AttrBuffer[x] = polyid;
+        StorePixel(x, clearPixel);
     }
 
     // clear the screen
@@ -1675,9 +1620,7 @@ void SoftRenderer3D::ClearBuffers()
                 u32 z = ((val3 & 0x7FFF) * 0x200) + 0x1FF;
 
                 u32 pixeladdr = FirstPixelOffset + y + x;
-                ColorBuffer[pixeladdr] = color;
-                DepthBuffer[pixeladdr] = z;
-                AttrBuffer[pixeladdr] = polyid | (val3 & 0x8000);
+                StorePixel(pixeladdr, Pixel{color, z, polyid | (val3 & 0x8000)});
 
                 xoff++;
             }
@@ -1701,9 +1644,7 @@ void SoftRenderer3D::ClearBuffers()
             for (int x = 0; x < 256; x++)
             {
                 u32 pixeladdr = FirstPixelOffset + y + x;
-                ColorBuffer[pixeladdr] = color;
-                DepthBuffer[pixeladdr] = clearz;
-                AttrBuffer[pixeladdr] = polyid;
+                StorePixel(pixeladdr, Pixel{color, clearz, polyid});
             }
         }
     }
@@ -1822,10 +1763,14 @@ u32* SoftRenderer3D::GetLine(int line)
             Platform::Semaphore_Wait(Sema_ScanlineCount);
     }
 
-    u32* rawline = &ColorBuffer[(line * ScanlineWidth) + FirstPixelOffset];
+    const int base = (line * ScanlineWidth) + FirstPixelOffset;
     u16 xpos = GPU3D.RenderXPos;
     if (xpos == 0)
-        return rawline;
+    {
+        for (int i = 0; i < 256; i++)
+            ScrolledLine[i] = LoadPixel(base + i).Color;
+        return ScrolledLine;
+    }
 
     // apply X scroll
 
@@ -1835,13 +1780,13 @@ u32* SoftRenderer3D::GetLine(int line)
         for (; j < 512; i++, j++)
             ScrolledLine[i] = 0;
         for (j = 0; i < 256; i++, j++)
-            ScrolledLine[i] = rawline[j];
+            ScrolledLine[i] = LoadPixel(base + j).Color;
     }
     else
     {
         int i = 0, j = xpos;
         for (; j < 256; i++, j++)
-            ScrolledLine[i] = rawline[j];
+            ScrolledLine[i] = LoadPixel(base + j).Color;
         for (; i < 256; i++)
             ScrolledLine[i] = 0;
     }

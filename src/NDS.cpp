@@ -534,6 +534,8 @@ void NDS::Reset()
         evt.Param = 0;
     }
     SchedListMask = 0;
+    ActiveEventCount = 0;
+    ActiveEventList.fill(0);
 
     KeyInput = 0x007F03FF;
     KeyCnt[0] = 0;
@@ -707,6 +709,13 @@ bool NDS::DoSavestate(Savestate* file)
         file->Var32(&evt.Param);
     }
     file->Var32(&SchedListMask);
+    ActiveEventCount = 0;
+    ActiveEventList.fill(0);
+    for (u32 i = 0; i < Event_MAX; i++)
+    {
+        if (SchedListMask & (1U << i))
+            AddActiveEvent(i);
+    }
     file->Var64(&ARM9Timestamp);
     file->Var64(&ARM9Target);
     file->Var64(&ARM7Timestamp);
@@ -813,21 +822,43 @@ void NDS::SetARM9BIOS(const std::array<u8, ARM9BIOSSize>& bios) noexcept
     ARM9BIOSNative = CRC32(ARM9BIOS.data(), ARM9BIOS.size()) == ARM9BIOSCRC32;
 }
 
+void NDS::AddActiveEvent(u32 id)
+{
+    if (ActiveEventCount >= ActiveEventList.size())
+        return;
+
+    for (u8 i = 0; i < ActiveEventCount; i++)
+    {
+        if (ActiveEventList[i] == id)
+            return;
+    }
+
+    ActiveEventList[ActiveEventCount++] = static_cast<u8>(id);
+}
+
+void NDS::RemoveActiveEvent(u32 id)
+{
+    for (u8 i = 0; i < ActiveEventCount; i++)
+    {
+        if (ActiveEventList[i] == id)
+        {
+            for (u8 j = i + 1; j < ActiveEventCount; j++)
+                ActiveEventList[j - 1] = ActiveEventList[j];
+            ActiveEventCount--;
+            return;
+        }
+    }
+}
+
 u64 NDS::NextTarget()
 {
     u64 minEvent = UINT64_MAX;
 
-    u32 mask = SchedListMask;
-    for (int i = 0; i < Event_MAX; i++)
+    for (u8 index = 0; index < ActiveEventCount; index++)
     {
-        if (!mask) break;
-        if (mask & 0x1)
-        {
-            if (SchedList[i].Timestamp < minEvent)
-                minEvent = SchedList[i].Timestamp;
-        }
-
-        mask >>= 1;
+        const u32 i = ActiveEventList[index];
+        if (SchedList[i].Timestamp < minEvent)
+            minEvent = SchedList[i].Timestamp;
     }
 
     u64 max = SysTimestamp + kMaxIterationCycles;
@@ -842,24 +873,20 @@ void NDS::RunSystem(u64 timestamp)
 {
     SysTimestamp = timestamp;
 
-    u32 mask = SchedListMask;
-    for (int i = 0; i < Event_MAX; i++)
+    for (u8 index = 0; index < ActiveEventCount; index++)
     {
-        if (!mask) break;
-        if (mask & 0x1)
+        const u32 i = ActiveEventList[index];
+        SchedEvent& evt = SchedList[i];
+
+        if (evt.Timestamp <= SysTimestamp)
         {
-            SchedEvent& evt = SchedList[i];
+            SchedListMask &= ~(1U << i);
+            RemoveActiveEvent(i);
 
-            if (evt.Timestamp <= SysTimestamp)
-            {
-                SchedListMask &= ~(1<<i);
-
-                EventFunc func = evt.Funcs[evt.FuncID];
-                func(evt.That, evt.Param);
-            }
+            EventFunc func = evt.Funcs[evt.FuncID];
+            func(evt.That, evt.Param);
+            index--;
         }
-
-        mask >>= 1;
     }
 }
 
@@ -867,20 +894,14 @@ u64 NDS::NextTargetSleep()
 {
     u64 minEvent = UINT64_MAX;
 
-    u32 mask = SchedListMask;
-    for (int i = 0; i < Event_MAX; i++)
+    for (u8 index = 0; index < ActiveEventCount; index++)
     {
-        if (!mask) break;
+        const u32 i = ActiveEventList[index];
         if (i == Event_SPU || i == Event_RTC)
         {
-            if (mask & 0x1)
-            {
-                if (SchedList[i].Timestamp < minEvent)
-                    minEvent = SchedList[i].Timestamp;
-            }
+            if (SchedList[i].Timestamp < minEvent)
+                minEvent = SchedList[i].Timestamp;
         }
-
-        mask >>= 1;
     }
 
     return minEvent;
@@ -891,34 +912,27 @@ void NDS::RunSystemSleep(u64 timestamp)
     u64 offset = timestamp - SysTimestamp;
     SysTimestamp = timestamp;
 
-    u32 mask = SchedListMask;
-    for (int i = 0; i < Event_MAX; i++)
+    for (u8 index = 0; index < ActiveEventCount; index++)
     {
-        if (!mask) break;
+        const u32 i = ActiveEventList[index];
+        SchedEvent& evt = SchedList[i];
+
         if (i == Event_RTC)
         {
-            if (mask & 0x1)
+            if (evt.Timestamp <= SysTimestamp)
             {
-                SchedEvent& evt = SchedList[i];
+                SchedListMask &= ~(1U << i);
+                RemoveActiveEvent(i);
 
-                if (evt.Timestamp <= SysTimestamp)
-                {
-                    SchedListMask &= ~(1<<i);
-
-                    EventFunc func = evt.Funcs[evt.FuncID];
-                    func(evt.That, evt.Param);
-                }
+                EventFunc func = evt.Funcs[evt.FuncID];
+                func(evt.That, evt.Param);
+                index--;
             }
         }
-        else if (mask & 0x1)
+        else if (evt.Timestamp <= SysTimestamp)
         {
-            if (SchedList[i].Timestamp <= SysTimestamp)
-            {
-                SchedList[i].Timestamp += offset;
-            }
+            evt.Timestamp += offset;
         }
-
-        mask >>= 1;
     }
 }
 
@@ -1151,14 +1165,16 @@ void NDS::ScheduleEvent(u32 id, bool periodic, s32 delay, u32 funcid, u32 param)
     evt.FuncID = funcid;
     evt.Param = param;
 
-    SchedListMask |= (1<<id);
+    SchedListMask |= (1U << id);
+    AddActiveEvent(id);
 
     Reschedule(evt.Timestamp);
 }
 
 void NDS::CancelEvent(u32 id)
 {
-    SchedListMask &= ~(1<<id);
+    SchedListMask &= ~(1U << id);
+    RemoveActiveEvent(id);
 }
 
 

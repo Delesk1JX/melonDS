@@ -21,6 +21,7 @@
 #include <string.h>
 #include <assert.h>
 #include <unordered_map>
+#include <vector>
 
 #define XXH_STATIC_LINKING_ONLY
 #include "xxhash/xxhash.h"
@@ -511,7 +512,7 @@ void ARMJIT::SetJITArgs(JITArgs args) noexcept
 
 void ARMJIT::SetMaxBlockSize(int size) noexcept
 {
-    SetJITArgs(JITArgs{static_cast<unsigned>(size), LiteralOptimizations, LiteralOptimizations, FastMemory});
+    SetJITArgs(JITArgs{static_cast<unsigned>(size), LiteralOptimizations, BranchOptimizations, FastMemory});
 }
 
 void ARMJIT::SetLiteralOptimizations(bool enabled) noexcept
@@ -533,6 +534,9 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
 {
     bool thumb = cpu->CPSR & 0x20;
 
+    if (JitBlocks9.size() + JitBlocks7.size() >= 256)
+        EvictLeastRecentlyUsedBlocks(std::max<size_t>(1, (JitBlocks9.size() + JitBlocks7.size()) / 4));
+
     u32 blockAddr = cpu->R[15] - (thumb ? 2 : 4);
 
     u32 localAddr = LocaliseCodeAddress(cpu->Num, blockAddr);
@@ -545,6 +549,8 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     auto existingBlockIt = map.find(blockAddr);
     if (existingBlockIt != map.end())
     {
+        existingBlockIt->second->LastUsedTick = ++CacheAccessTick;
+
         // there's already a block, though it's not inside the fast map
         // could be that there are two blocks at the same physical addr
         // but different mirrors
@@ -924,6 +930,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
         range->Blocks.Add(block);
     }
 
+    block->LastUsedTick = ++CacheAccessTick;
     if (cpu->Num == 0)
         JitBlocks9[blockAddr] = block;
     else
@@ -1025,6 +1032,86 @@ void ARMJIT::InvalidateByAddr(u32 localAddr) noexcept
         {
             delete block;
         }
+    }
+}
+
+void ARMJIT::EvictLeastRecentlyUsedBlocks(size_t count) noexcept
+{
+    std::vector<std::pair<u64, JitBlock*>> candidates;
+    candidates.reserve(JitBlocks9.size() + JitBlocks7.size());
+
+    auto collect = [&](const std::unordered_map<u32, JitBlock*>& blocks)
+    {
+        for (const auto& entry : blocks)
+            candidates.emplace_back(entry.second->LastUsedTick, entry.second);
+    };
+
+    collect(JitBlocks9);
+    collect(JitBlocks7);
+
+    std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs)
+    {
+        return lhs.first < rhs.first;
+    });
+
+    for (size_t i = 0; i < count && i < candidates.size(); ++i)
+    {
+        JitBlock* block = candidates[i].second;
+        if (!block)
+            continue;
+
+        if (block->Num == 0)
+        {
+            auto it = JitBlocks9.find(block->StartAddr);
+            if (it != JitBlocks9.end() && it->second == block)
+                JitBlocks9.erase(it);
+        }
+        else
+        {
+            auto it = JitBlocks7.find(block->StartAddr);
+            if (it != JitBlocks7.end() && it->second == block)
+                JitBlocks7.erase(it);
+        }
+
+        auto restoreIt = RestoreCandidates.begin();
+        while (restoreIt != RestoreCandidates.end())
+        {
+            if (restoreIt->second == block)
+            {
+                restoreIt = RestoreCandidates.erase(restoreIt);
+                continue;
+            }
+            ++restoreIt;
+        }
+
+        FastBlockLookupRegions[block->StartAddrLocal >> 27][(block->StartAddrLocal & 0x7FFFFFF) / 2] = (u64)UINT32_MAX << 32;
+
+        for (u32 j = 0; j < block->NumAddresses; j++)
+        {
+            u32 addr = block->AddressRanges()[j];
+            AddressRange* region = CodeMemRegions[addr >> 27];
+            AddressRange* range = &region[(addr & 0x7FFFFFF) / 512];
+            bool removed = range->Blocks.RemoveByValue(block);
+            if (removed)
+            {
+                u32 rebuiltCode = 0;
+                for (int k = 0; k < range->Blocks.Length; k++)
+                {
+                    JitBlock* existingBlock = range->Blocks[k];
+                    for (u32 l = 0; l < existingBlock->NumAddresses; l++)
+                    {
+                        if (existingBlock->AddressRanges()[l] == (addr & ~0x1FF))
+                        {
+                            rebuiltCode |= existingBlock->AddressMasks()[l];
+                            break;
+                        }
+                    }
+                }
+                range->Code = rebuiltCode;
+            }
+        }
+
+        delete block;
     }
 }
 

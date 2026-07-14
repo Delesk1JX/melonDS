@@ -101,6 +101,20 @@ private:
 
     u32 MRAMBurstCount {};
     std::array<u8, 256> MRAMBurstTable;
+
+    u32 CachedTimingSrcId {};
+    u32 CachedTimingDstId {};
+    u32 CachedTimingSrcRgn {};
+    u32 CachedTimingDstRgn {};
+    u32 CachedTimingSrcN {};
+    u32 CachedTimingSrcS {};
+    u32 CachedTimingDstN {};
+    u32 CachedTimingDstS {};
+    bool CachedTimingValid {};
+    bool CachedTimingWidth32 {};
+
+    void RefreshTimingCache9(bool use32);
+    void RefreshTimingCache7(bool use32);
 };
 
 }
