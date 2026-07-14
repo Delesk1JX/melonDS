@@ -445,6 +445,14 @@ private:
     };
 
     RendererPolygon PolygonList[2048];
+
+    struct Pixel
+    {
+        u32 Color;
+        u32 Depth;
+        u32 Attr;
+    };
+
     void TextureLookup(u32 texparam, u32 texpal, s16 s, s16 t, u16* color, u8* alpha) const;
     u32 RenderPixel(const Polygon* polygon, u8 vr, u8 vg, u8 vb, s16 s, s16 t) const;
     void PlotTranslucentPixel(u32 pixeladdr, u32 color, u32 z, u32 polyattr, u32 shadow);
@@ -476,13 +484,6 @@ private:
     static constexpr int NumScanlines = 194;
     static constexpr int BufferSize = ScanlineWidth * NumScanlines;
     static constexpr int FirstPixelOffset = ScanlineWidth + 1;
-
-    struct Pixel
-    {
-        u32 Color;
-        u32 Depth;
-        u32 Attr;
-    };
 
     // Unified storage for the soft renderer's per-pixel state.
     Pixel Pixels[BufferSize * 2];
